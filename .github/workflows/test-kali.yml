@@ -1,0 +1,80 @@
+name: Test Kali Official Docker XRDP
+on:
+  workflow_dispatch:
+
+jobs:
+  test-kali:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Launch Kali Rolling Container
+        run: |
+          echo "[+] Pulling kalilinux/kali-rolling..."
+          docker run -d --name kali-official --privileged -p 3389:3389 -v /sys/fs/cgroup:/sys/fs/cgroup:ro kalilinux/kali-rolling sleep 3600
+          
+          echo "[+] Installing official Kali packages inside container..."
+          docker exec kali-official bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y --no-install-recommends \
+              kali-desktop-xfce \
+              kali-themes \
+              kali-wallpapers-all \
+              kali-menu \
+              kali-tools-top10 \
+              xrdp \
+              xorgxrdp \
+              xorg \
+              dbus-x11 \
+              sudo \
+              curl \
+              wget \
+              nano
+            
+            # Allow anybody to start Xorg
+            echo "allowed_users=anybody" > /etc/X11/Xwrapper.config
+            
+            # Create runner user
+            useradd -m -s /bin/bash runner
+            echo "runner:Fazah@123" | chpasswd
+            echo "root:Fazah@123" | chpasswd
+            usermod -aG sudo runner
+            echo "runner ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+            
+            # Configure auto-login for runner in XRDP
+            sed -i "/^\[Xorg\]/,/^\[/ s/^username=.*/username=runner/" /etc/xrdp/xrdp.ini
+            sed -i "/^\[Xorg\]/,/^\[/ s/^password=.*/password=Fazah@123/" /etc/xrdp/xrdp.ini
+            
+            # Configure startwm.sh
+            cat << "EOF" > /etc/xrdp/startwm.sh
+#!/bin/sh
+unset DBUS_SESSION_BUS_ADDRESS
+unset XDG_RUNTIME_DIR
+exec dbus-launch --exit-with-session startxfce4
+EOF
+            chmod +x /etc/xrdp/startwm.sh
+            
+            # Start services
+            /etc/init.d/dbus start
+            /etc/init.d/xrdp start
+          '
+          
+      - name: Verify Kali Desktop and XRDP Port
+        run: |
+          echo "[*] Checking port 3389 on host..."
+          for i in $(seq 1 15); do
+            if nc -z 127.0.0.1 3389; then
+              echo "[+] Port 3389 is OPEN and LISTENING!"
+              break
+            fi
+            sleep 1
+          done
+          
+          echo "[*] Kali /etc/os-release inside container:"
+          docker exec kali-official cat /etc/os-release
+          
+          echo "[*] Kali wallpapers list inside container:"
+          docker exec kali-official ls -la /usr/share/backgrounds/kali-16x9/ || true
+          
+          echo "[*] Testing XRDP session process inside container:"
+          docker exec kali-official ps aux | grep xrdp
